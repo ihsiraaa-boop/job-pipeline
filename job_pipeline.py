@@ -11,15 +11,33 @@ import requests
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-MAX_MESSAGES_PER_RUN = 50   # hard cap so every run finishes
+MAX_MESSAGES_PER_RUN = 50   # hard cap so every run always finishes
 MAX_JOB_AGE_DAYS = 14       # skip jobs older than this (0 = no limit)
 
-# Referral settings — leave unset until you are approved by a program.
+# Referral — leave unset until you are approved by a program.
 REFERRAL_CODE = os.environ.get("REFERRAL_CODE", "").strip()
 REFERRAL_DOMAINS = [
     d.strip().lower()
     for d in os.environ.get("REFERRAL_DOMAINS", "").split(",")
     if d.strip()
+]
+
+# Only send jobs whose location matches one of these (case-insensitive).
+# Leave the list empty to disable filtering.
+LOCATION_KEYWORDS = [
+    "india",
+    "bangalore", "bengaluru",
+    "chennai", "coimbatore", "madurai", "trichy", "tiruchirappalli",
+    "tamil nadu", "tamilnadu",
+    "hyderabad", "pune", "mumbai", "delhi", "noida", "gurgaon", "gurugram",
+    "remote", "wfh", "work from home", "anywhere",
+]
+
+# Optional blacklist — locations containing these are dropped even if
+# they also matched a keyword above (e.g. "Remote - US" drops "Remote").
+LOCATION_EXCLUDE = [
+    "united states", "us-remote", "us remote", "remote - us", "remote (us",
+    "canada", "united kingdom", "uk-remote", "emea-only", "latam",
 ]
 
 COMPANIES = [
@@ -29,48 +47,42 @@ COMPANIES = [
     ("greenhouse", "groww"),
     ("greenhouse", "paytm"),
     ("greenhouse", "meesho"),
-    ("greenhouse", "zeta"),
     ("greenhouse", "inmobi"),
-    ("greenhouse", "sarvamai"),
-    ("greenhouse", "freshworks"),
-    ("greenhouse", "zscaler"),
+    ("greenhouse", "phonepe"),
+    ("greenhouse", "dream11"),
+    ("greenhouse", "udaan"),
+    ("greenhouse", "navi"),
+    ("greenhouse", "sliceit"),
     ("lever", "swiggy"),
     ("lever", "meesho"),
     ("lever", "cred"),
+    ("lever", "pocketfm"),
+    ("lever", "slice"),
+    ("lever", "jupiter"),
+    ("lever", "smallcase"),
+    ("lever", "pharmeasy"),
 
     # --- Global tech & AI (Greenhouse) ---
-    ("greenhouse", "stripe"),
     ("greenhouse", "databricks"),
     ("greenhouse", "mongodb"),
-    ("greenhouse", "okta"),
     ("greenhouse", "gitlab"),
     ("greenhouse", "huggingface"),
-    ("greenhouse", "airbnb"),
-    ("greenhouse", "coinbase"),
-    ("greenhouse", "robinhood"),
-    ("greenhouse", "doordash"),
-    ("greenhouse", "discord"),
+    ("greenhouse", "anthropic"),
+    ("greenhouse", "openai"),
     ("greenhouse", "figma"),
     ("greenhouse", "notion"),
     ("greenhouse", "vercel"),
     ("greenhouse", "asana"),
-    ("greenhouse", "brex"),
-    ("greenhouse", "ramp"),
-    ("greenhouse", "plaid"),
-    ("greenhouse", "rippling"),
-    ("greenhouse", "gusto"),
-    ("greenhouse", "anthropic"),
-    ("greenhouse", "openai"),
-    ("greenhouse", "netflix"),
-    ("greenhouse", "spotify"),
+    ("greenhouse", "airbnb"),
+    ("greenhouse", "doordash"),
+    ("greenhouse", "discord"),
+    ("greenhouse", "stripe"),
 
     # --- Global tech & AI (Lever) ---
     ("lever", "palantir"),
     ("lever", "whoop"),
     ("lever", "gopuff"),
     ("lever", "zoox"),
-    ("lever", "spotify"),
-    ("lever", "netflix"),
 
     # --- Global tech & AI (Ashby) ---
     ("ashby", "elevenlabs"),
@@ -85,20 +97,21 @@ COMPANIES = [
     ("ashby", "supabase"),
     ("ashby", "cursor"),
     ("ashby", "deel"),
-    ("ashby", "ramp"),
-    ("ashby", "plaid"),
     ("ashby", "mistral.ai"),
 ]
 
 SEEN_FILE = "seen_jobs.json"
 
 # ============================================================
-# STATE (remember what we've already sent)
+# STATE — remember what we've already sent
 # ============================================================
 def load_seen():
     if os.path.exists(SEEN_FILE):
-        with open(SEEN_FILE, "r") as f:
-            return set(json.load(f))
+        try:
+            with open(SEEN_FILE, "r") as f:
+                return set(json.load(f))
+        except Exception:
+            return set()
     return set()
 
 def save_seen(seen):
@@ -115,9 +128,9 @@ def fetch_greenhouse(company):
     jobs = r.json().get("jobs", [])
     return [{
         "id": f"gh_{company}_{job['id']}",
-        "title": job.get("title", "Untitled"),
+        "title": job.get("title", "Untitled").strip(),
         "company": company.replace("-", " ").title(),
-        "location": (job.get("location") or {}).get("name", "Not specified"),
+        "location": (job.get("location") or {}).get("name", "").strip(),
         "url": job.get("absolute_url", ""),
         "date": job.get("updated_at", ""),
     } for job in jobs]
@@ -129,9 +142,9 @@ def fetch_lever(company):
     jobs = r.json()
     return [{
         "id": f"lv_{company}_{job['id']}",
-        "title": job.get("text", "Untitled"),
+        "title": job.get("text", "Untitled").strip(),
         "company": company.replace("-", " ").title(),
-        "location": job.get("categories", {}).get("location", "Not specified"),
+        "location": job.get("categories", {}).get("location", "").strip(),
         "url": job.get("hostedUrl", ""),
         "date": job.get("createdAt", ""),  # epoch ms
     } for job in jobs]
@@ -143,9 +156,9 @@ def fetch_ashby(company):
     jobs = r.json().get("jobs", [])
     return [{
         "id": f"as_{company}_{job['id']}",
-        "title": job.get("title", "Untitled"),
+        "title": job.get("title", "Untitled").strip(),
         "company": company.replace("-", " ").title(),
-        "location": job.get("location", "Not specified"),
+        "location": job.get("location", "").strip(),
         "url": job.get("jobUrl", ""),
         "date": job.get("publishedAt") or job.get("updatedAt", ""),
     } for job in jobs]
@@ -157,7 +170,7 @@ FETCHERS = {
 }
 
 # ============================================================
-# DATE HELPERS (handles ISO strings and epoch ms)
+# FILTERS
 # ============================================================
 def parse_date(value):
     if value is None or value == "":
@@ -183,9 +196,26 @@ def is_recent(value):
         return True
     dt = parse_date(value)
     if dt is None:
-        return True
+        return True  # if we cannot parse the date, let it through
     cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_JOB_AGE_DAYS)
     return dt >= cutoff
+
+def matches_location(location):
+    if not LOCATION_KEYWORDS:
+        return True
+    if not location:
+        return False
+    loc = location.lower()
+    if any(bad in loc for bad in LOCATION_EXCLUDE):
+        return False
+    return any(k in loc for k in LOCATION_KEYWORDS)
+
+def dedupe_key(job):
+    return "|".join([
+        job["company"].lower().strip(),
+        job["title"].lower().strip(),
+        job["location"].lower().strip(),
+    ])
 
 # ============================================================
 # FORMATTING + REFERRAL
@@ -203,7 +233,7 @@ def build_apply_url(original_url):
 def format_post(job):
     return (
         f"{job['title']}\n"
-        f"{job['company']} — {job['location']}\n"
+        f"{job['company']} — {job['location'] or 'Not specified'}\n"
         f"\n"
         f"Apply here:\n"
         f"{build_apply_url(job['url'])}"
@@ -219,7 +249,6 @@ def send_telegram(text, max_retries=3):
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
         "disable_web_page_preview": False,
-        # NO parse_mode — prevents 400 "can't parse entities" errors
     }
 
     for attempt in range(max_retries):
@@ -243,7 +272,6 @@ def send_telegram(text, max_retries=3):
             time.sleep(retry_after)
             continue
 
-        # 400 and anything else — will never succeed, do not retry
         print(f"Telegram error {r.status_code}: {r.text[:200]}")
         return "fail"
 
@@ -254,8 +282,11 @@ def send_telegram(text, max_retries=3):
 # ============================================================
 def main():
     seen = load_seen()
+    sent_keys = set()      # dedupe within this run
     sent = 0
     skipped_old = 0
+    skipped_location = 0
+    skipped_duplicate = 0
     failed = 0
 
     for ats, company in COMPANIES:
@@ -276,26 +307,43 @@ def main():
         for job in jobs:
             if sent >= MAX_MESSAGES_PER_RUN:
                 break
+
             if job["id"] in seen:
                 continue
+
             if not is_recent(job.get("date", "")):
                 seen.add(job["id"])
                 skipped_old += 1
                 continue
 
+            if not matches_location(job.get("location", "")):
+                seen.add(job["id"])
+                skipped_location += 1
+                continue
+
+            key = dedupe_key(job)
+            if key in sent_keys:
+                seen.add(job["id"])
+                skipped_duplicate += 1
+                continue
+
             status = send_telegram(format_post(job))
             if status == "ok":
                 seen.add(job["id"])
+                sent_keys.add(key)
                 sent += 1
-                print(f"Sent: {job['title']} ({company})")
-                time.sleep(1)  # stay under Telegram rate limit
+                print(f"Sent: {job['title']} ({company}) — {job['location']}")
+                time.sleep(1)
             else:
-                # Permanent failure — mark seen so we don't loop forever
                 seen.add(job["id"])
                 failed += 1
 
     save_seen(seen)
-    print(f"Done. sent={sent}, skipped_old={skipped_old}, failed={failed}")
+    print(
+        f"Done. sent={sent}, skipped_old={skipped_old}, "
+        f"skipped_location={skipped_location}, "
+        f"skipped_duplicate={skipped_duplicate}, failed={failed}"
+    )
 
 if __name__ == "__main__":
     main()
