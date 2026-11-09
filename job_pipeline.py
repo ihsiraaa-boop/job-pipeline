@@ -149,8 +149,8 @@ def send_telegram(text):
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
-        "parse_mode": "Markdown",
         "disable_web_page_preview": False,
+        # Removed: "parse_mode": "Markdown"
     }
     r = requests.post(url, json=payload, timeout=15)
     r.raise_for_status()
