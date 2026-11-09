@@ -2,7 +2,7 @@ name: Job Pipeline
 
 on:
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 */6 * * *"   # every 6 hours (change to "*/30 * * * *" to clear backlog faster)
   workflow_dispatch:
 
 permissions:
@@ -27,12 +27,14 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          REFERRAL_CODE: ${{ secrets.REFERRAL_CODE }}
+          REFERRAL_DOMAINS: ${{ secrets.REFERRAL_DOMAINS }}
         run: python job_pipeline.py
 
       - name: Commit updated state
         run: |
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
-          git add seen_jobs.json
+          git add seen_jobs.json || true
           git diff --staged --quiet || git commit -m "Update seen jobs [skip ci]"
           git push
